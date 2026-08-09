@@ -1,0 +1,281 @@
+# =============================================================================
+# VexarDrive Fleet Ping Service — Deploy Pipeline
+# =============================================================================
+# Triggered: after CI completes on main, or manual dispatch
+# Pipeline: Deploy Staging → Smoke Test → Manual Approval → Deploy Prod → Verify
+#
+# Key decisions:
+#   - Sequential deployment: staging → approval → production
+#   - GitHub Environment protection rules for manual approval gate
+#   - Canary deployment via Container Apps traffic splitting
+#   - Automated rollback on smoke test failure
+#   - OIDC authentication to Azure (no stored credentials)
+# =============================================================================
+
+name: Deploy Pipeline
+
+on:
+  # Auto-trigger after CI succeeds on main
+  workflow_run:
+    workflows: ["CI Pipeline"]
+    types: [completed]
+    branches: [main]
+
+  # Manual trigger for ad-hoc deployments
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      image_tag:
+        description: "Image tag to deploy (default: latest)"
+        required: false
+        default: "latest"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGISTRY: vexaracr.azurecr.io
+  IMAGE_NAME: fleet-ping-service
+
+jobs:
+  # ===========================================================================
+  # Job 1: Deploy to Staging
+  # ===========================================================================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    # Skip if CI failed (workflow_run trigger)
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+
+    environment:
+      name: staging
+      url: ${{ steps.deploy.outputs.app_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Determine image tag
+        id: image
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.image_tag }}" >> $GITHUB_OUTPUT
+          else
+            # Match the sha-prefix format from docker/metadata-action in CI
+            SHORT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | head -c 7)
+            echo "tag=sha-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy to Container Apps (Staging)
+        id: deploy
+        run: |
+          az containerapp update \
+            --name ca-fleet-ping-staging \
+            --resource-group rg-vexar-staging \
+            --image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image.outputs.tag }}
+
+          APP_URL=$(az containerapp show \
+            --name ca-fleet-ping-staging \
+            --resource-group rg-vexar-staging \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "app_url=https://${APP_URL}" >> $GITHUB_OUTPUT
+
+      - name: Smoke Test (Staging)
+        id: smoke
+        run: |
+          APP_URL="${{ steps.deploy.outputs.app_url }}"
+          echo "Running smoke tests against ${APP_URL}..."
+
+          # Health check
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${APP_URL}/healthz" --max-time 10)
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "❌ Health check failed (HTTP ${HTTP_STATUS})"
+            exit 1
+          fi
+          echo "✅ Health check passed"
+
+          # Readiness check
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${APP_URL}/readyz" --max-time 10)
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "❌ Readiness check failed (HTTP ${HTTP_STATUS})"
+            exit 1
+          fi
+          echo "✅ Readiness check passed"
+
+          # API root check
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${APP_URL}/" --max-time 10)
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "❌ API root check failed (HTTP ${HTTP_STATUS})"
+            exit 1
+          fi
+          echo "✅ API root check passed"
+
+          echo "🎉 All smoke tests passed!"
+
+      - name: Rollback on Failure
+        if: failure() && steps.deploy.outcome == 'success'
+        run: |
+          echo "⚠️ Smoke tests failed — rolling back staging deployment..."
+          # Activate the previous revision and deactivate the failed one
+          PREVIOUS_REVISION=$(az containerapp revision list \
+            --name ca-fleet-ping-staging \
+            --resource-group rg-vexar-staging \
+            --query "[-2].name" -o tsv)
+
+          if [ -n "$PREVIOUS_REVISION" ]; then
+            az containerapp ingress traffic set \
+              --name ca-fleet-ping-staging \
+              --resource-group rg-vexar-staging \
+              --revision-weight "${PREVIOUS_REVISION}=100"
+            echo "✅ Rolled back to revision: ${PREVIOUS_REVISION}"
+          else
+            echo "⚠️ No previous revision found for rollback"
+          fi
+
+  # ===========================================================================
+  # Job 2: Deploy to Production (requires manual approval)
+  # ===========================================================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    # Only deploy to prod from main branch
+    if: ${{ github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production' }}
+
+    environment:
+      # GitHub Environment with protection rules:
+      # - Required reviewers (manual approval gate)
+      # - Wait timer (optional cool-down)
+      name: production
+      url: ${{ steps.promote.outputs.app_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Determine image tag
+        id: image
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.image_tag }}" >> $GITHUB_OUTPUT
+          else
+            # Match the sha-prefix format from docker/metadata-action in CI
+            SHORT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | head -c 7)
+            echo "tag=sha-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          fi
+
+      # --- Canary Deployment ---
+      # Deploy new revision and route 10% of traffic to it.
+      # If smoke tests pass, promote to 100%.
+      - name: Deploy Canary Revision (10% traffic)
+        id: canary
+        run: |
+          # Create new revision with the updated image
+          az containerapp update \
+            --name ca-fleet-ping-prod \
+            --resource-group rg-vexar-prod \
+            --image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image.outputs.tag }} \
+            --revision-suffix "v-$(echo ${{ steps.image.outputs.tag }} | head -c 8)"
+
+          # Get the new revision name
+          NEW_REVISION=$(az containerapp revision list \
+            --name ca-fleet-ping-prod \
+            --resource-group rg-vexar-prod \
+            --query "[-1].name" -o tsv)
+          echo "new_revision=${NEW_REVISION}" >> $GITHUB_OUTPUT
+
+          # Get the current active revision
+          CURRENT_REVISION=$(az containerapp revision list \
+            --name ca-fleet-ping-prod \
+            --resource-group rg-vexar-prod \
+            --query "[-2].name" -o tsv)
+          echo "current_revision=${CURRENT_REVISION}" >> $GITHUB_OUTPUT
+
+          # Route 10% traffic to canary
+          az containerapp ingress traffic set \
+            --name ca-fleet-ping-prod \
+            --resource-group rg-vexar-prod \
+            --revision-weight "${CURRENT_REVISION}=90" "${NEW_REVISION}=10"
+
+          echo "🐤 Canary deployed: 10% traffic to ${NEW_REVISION}"
+
+      - name: Smoke Test (Production Canary)
+        run: |
+          APP_URL=$(az containerapp show \
+            --name ca-fleet-ping-prod \
+            --resource-group rg-vexar-prod \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+
+          echo "Running smoke tests against https://${APP_URL}..."
+
+          for endpoint in "/healthz" "/readyz" "/"; do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://${APP_URL}${endpoint}" --max-time 10)
+            if [ "$HTTP_STATUS" != "200" ]; then
+              echo "❌ Smoke test failed for ${endpoint} (HTTP ${HTTP_STATUS})"
+              exit 1
+            fi
+            echo "✅ ${endpoint} — OK"
+          done
+
+          echo "🎉 All production smoke tests passed!"
+
+      - name: Promote Canary to 100%
+        id: promote
+        run: |
+          NEW_REVISION="${{ steps.canary.outputs.new_revision }}"
+          az containerapp ingress traffic set \
+            --name ca-fleet-ping-prod \
+            --resource-group rg-vexar-prod \
+            --revision-weight "${NEW_REVISION}=100"
+
+          APP_URL=$(az containerapp show \
+            --name ca-fleet-ping-prod \
+            --resource-group rg-vexar-prod \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "app_url=https://${APP_URL}" >> $GITHUB_OUTPUT
+
+          echo "🚀 Production deployment complete — 100% traffic on ${NEW_REVISION}"
+
+      - name: Rollback on Failure
+        if: failure()
+        run: |
+          echo "⚠️ Production deployment failed — rolling back..."
+          CURRENT_REVISION="${{ steps.canary.outputs.current_revision }}"
+          NEW_REVISION="${{ steps.canary.outputs.new_revision }}"
+
+          if [ -n "$CURRENT_REVISION" ]; then
+            # Route all traffic back to the previous revision
+            az containerapp ingress traffic set \
+              --name ca-fleet-ping-prod \
+              --resource-group rg-vexar-prod \
+              --revision-weight "${CURRENT_REVISION}=100"
+
+            # Deactivate the failed revision
+            az containerapp revision deactivate \
+              --name ca-fleet-ping-prod \
+              --resource-group rg-vexar-prod \
+              --revision "${NEW_REVISION}" || true
+
+            echo "✅ Rolled back to revision: ${CURRENT_REVISION}"
+          else
+            echo "⚠️ No previous revision found for rollback"
+          fi

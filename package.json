@@ -1,15 +1,32 @@
 {
   "name": "vexar-fleet-ping-service",
-  "version": "0.1.0",
-  "description": "VexarDrive Fleet Ping Service (assessment starter)",
+  "version": "1.0.0",
+  "description": "VexarDrive Fleet Ping Service — vehicle location ping ingestion and driver authentication",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "echo \"no tests configured\""
+    "dev": "NODE_ENV=development node server.js",
+    "test": "jest --verbose --forceExit --detectOpenHandles",
+    "test:unit": "jest --testPathPattern=tests/unit --verbose",
+    "test:integration": "jest --testPathPattern=tests/integration --verbose --forceExit --detectOpenHandles",
+    "test:coverage": "jest --coverage --forceExit --detectOpenHandles",
+    "lint": "eslint ."
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "pg": "^8.11.5",
-    "jsonwebtoken": "^9.0.2"
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.1",
+    "pino": "^9.6.0",
+    "pino-http": "^10.4.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "pino-pretty": "^13.0.0",
+    "supertest": "^7.0.0",
+    "eslint": "^9.17.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
   }
 }

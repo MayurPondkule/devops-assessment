@@ -1,23 +1,60 @@
-version: "3.8"
+# =============================================================================
+# VexarDrive Fleet Ping Service — Docker Compose (Local Development)
+# =============================================================================
+# This file is for LOCAL DEVELOPMENT ONLY.
+# Production deployments use Azure Container Apps via Terraform + CI/CD.
+#
+# Usage:
+#   cp .env.example .env   # Configure your local environment
+#   docker compose up --build
+# =============================================================================
 
 services:
   app:
-    build: .
+    build:
+      context: .
+      target: runtime
     ports:
       - "3000:3000"
     environment:
-      - NODE_ENV=production
+      - NODE_ENV=development
+      - PORT=3000
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=${DB_USER:-vexaradmin}
+      - DB_PASSWORD=${DB_PASSWORD:-localdev}
+      - DB_NAME=${DB_NAME:-vexar_fleet}
+      - DB_SSL=false
+      - JWT_SECRET=${JWT_SECRET:-dev-only-not-for-production}
+      - LOG_LEVEL=debug
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   db:
-    image: postgres:15
+    image: postgres:16-alpine
     ports:
-      - "0.0.0.0:5432:5432"
+      - "127.0.0.1:5432:5432"  # Bind to localhost only — not 0.0.0.0
     environment:
-      - POSTGRES_USER=vexaradmin
-      - POSTGRES_PASSWORD=V3xar@2024!Prod
-      - POSTGRES_DB=vexar_fleet
+      - POSTGRES_USER=${DB_USER:-vexaradmin}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-localdev}
+      - POSTGRES_DB=${DB_NAME:-vexar_fleet}
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro  # Auto-apply migrations on first run
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-vexaradmin} -d ${DB_NAME:-vexar_fleet}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
 
 volumes:
   pgdata:
