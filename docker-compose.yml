@@ -37,6 +37,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    networks:
+      - backend
 
   db:
     image: postgres:16-alpine
@@ -55,6 +57,12 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
+    networks:
+      - backend
 
 volumes:
   pgdata:
+
+networks:
+  backend:
+    driver: bridge
