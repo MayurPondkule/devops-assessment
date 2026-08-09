@@ -1,0 +1,17 @@
+variable "resource_group_name" { type = string }
+variable "location" { type = string }
+variable "project_name" { type = string }
+variable "environment" { type = string }
+variable "subnet_id" { type = string }
+variable "log_analytics_id" { type = string }
+variable "app_insights_conn_str" { type = string }
+variable "managed_identity_id" { type = string }
+variable "container_image" { type = string }
+variable "container_min_replicas" { type = number }
+variable "container_max_replicas" { type = number }
+variable "container_cpu" { type = number }
+variable "container_memory" { type = string }
+variable "keyvault_uri" { type = string }
+variable "db_host" { type = string }
+variable "db_name" { type = string }
+variable "tags" { type = map(string) }

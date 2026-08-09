@@ -16,7 +16,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1: Builder — install dependencies
 # ---------------------------------------------------------------------------
-FROM node:22-alpine AS builder
+FROM node:22-alpine3.20 AS builder
 
 WORKDIR /app
 
@@ -35,7 +35,7 @@ COPY src/ ./src/
 # ---------------------------------------------------------------------------
 # Stage 2: Runtime — lean production image
 # ---------------------------------------------------------------------------
-FROM node:22-alpine AS runtime
+FROM node:22-alpine3.20 AS runtime
 
 # Install dumb-init for proper PID 1 signal handling.
 # Without this, Node.js doesn't receive SIGTERM properly in containers,

@@ -1,86 +1,161 @@
-// VexarDrive - Fleet Ping Service (minimal demo backend)
-// NOTE: This is a deliberately trimmed-down module extracted from a larger monorepo
-// for the purposes of this assessment. Treat it as inherited legacy code.
+// =============================================================================
+// VexarDrive — Fleet Ping Service
+// =============================================================================
+// Production-ready Node.js/Express backend for receiving vehicle location pings,
+// handling driver authentication, and managing fleet data.
+//
+// Originally inherited as legacy code with hardcoded credentials, SQL injection
+// vulnerabilities, no connection pooling, and missing security controls.
+//
+// Refactored for production readiness. See docs/TECHNICAL_REPORT.md for details.
+// =============================================================================
+
+"use strict";
 
 const express = require("express");
-const { Client } = require("pg");
-const jwt = require("jsonwebtoken");
+const helmet = require("helmet");
+const pinoHttp = require("pino-http");
 
+const config = require("./src/config");
+const logger = require("./src/logger");
+const { shutdown: dbShutdown } = require("./src/db");
+
+// Routes
+const healthRoutes = require("./src/routes/health");
+const fleetRoutes = require("./src/routes/fleet");
+const authRoutes = require("./src/routes/auth");
+const adminRoutes = require("./src/routes/admin");
+
+// Error handling
+const { errorHandler, notFoundHandler } = require("./src/middleware/errorHandler");
+
+// Rate limiting (defense-in-depth — infrastructure layer is primary control)
+const { pingLimiter, authLimiter, apiLimiter } = require("./src/middleware/rateLimiter");
+
+// =============================================================================
+// Express App Setup
+// =============================================================================
 const app = express();
-app.use(express.json());
 
-// --- DB connection ---------------------------------------------------
-// Hardcoded credentials (intentional - do not "just" move to .env and stop there)
-const DB_CONFIG = {
-  host: "vexar-pg-prod.postgres.database.azure.com",
-  port: 5432,
-  user: "vexaradmin",
-  password: "V3xar@2024!Prod",
-  database: "vexar_fleet",
-};
+// --- Security Headers ---
+// helmet sets various HTTP headers to protect against common attacks
+// (XSS, clickjacking, MIME sniffing, etc.)
+app.use(helmet());
 
-const JWT_SECRET = "vexar-super-secret-key-2024";
+// --- Request Parsing ---
+app.use(express.json({ limit: "1mb" }));
 
-// --- Routes ------------------------------------------------------------
+// --- Request Logging ---
+// Structured HTTP request/response logging for every request
+app.use(
+  pinoHttp({
+    logger,
+    // Don't log health check requests (noisy in production)
+    autoLogging: {
+      ignore: (req) => req.url === "/healthz",
+    },
+    // Custom serializers for log output
+    customLogLevel: (req, res, err) => {
+      if (res.statusCode >= 500 || err) return "error";
+      if (res.statusCode >= 400) return "warn";
+      return "info";
+    },
+  })
+);
 
+// --- Routes ---
 app.get("/", (req, res) => {
-  res.send("VexarDrive Fleet Ping Service is running");
-});
-
-// Fleet vehicle ping ingestion - called very frequently by devices in the field
-app.post("/api/fleet/ping", async (req, res) => {
-  const { vehicleId, lat, lng, speed, timestamp } = req.body;
-
-  // A brand new client connection is opened and torn down on every single request.
-  const client = new Client(DB_CONFIG);
-  try {
-    await client.connect();
-    await client.query(
-      `INSERT INTO fleet_pings (vehicle_id, lat, lng, speed, ts) VALUES ($1, $2, $3, $4, $5)`,
-      [vehicleId, lat, lng, speed, timestamp]
-    );
-    res.json({ status: "ok" });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "insert failed" });
-  } finally {
-    await client.end();
-  }
-});
-
-// Driver login
-app.post("/api/auth/login", async (req, res) => {
-  const { phone, otp } = req.body;
-
-  const client = new Client(DB_CONFIG);
-  await client.connect();
-  const result = await client.query(
-    `SELECT * FROM drivers WHERE phone = '${phone}'` // string-built query, left as-is intentionally
-  );
-  await client.end();
-
-  if (result.rows.length === 0) {
-    return res.status(401).json({ error: "not found" });
-  }
-
-  const token = jwt.sign({ driverId: result.rows[0].id }, JWT_SECRET, {
-    expiresIn: "30d",
+  res.json({
+    service: "VexarDrive Fleet Ping Service",
+    version: process.env.npm_package_version || "0.1.0",
+    status: "running",
   });
-  res.json({ token });
 });
 
-// Admin endpoint to fetch all driver data - no auth check
-app.get("/api/admin/drivers", async (req, res) => {
-  const client = new Client(DB_CONFIG);
-  await client.connect();
-  const result = await client.query(`SELECT * FROM drivers`);
-  await client.end();
-  res.json(result.rows);
+app.use(healthRoutes);
+app.use("/api/fleet", pingLimiter, fleetRoutes);
+app.use("/api/auth", authLimiter, authRoutes);
+app.use("/api/admin", apiLimiter, adminRoutes);
+
+// --- Error Handling (must be after routes) ---
+app.use(notFoundHandler);
+app.use(errorHandler);
+
+// =============================================================================
+// Server Start & Graceful Shutdown
+// =============================================================================
+let server;
+
+function startServer() {
+  server = app.listen(config.port, () => {
+    logger.info(
+      { port: config.port, env: config.env },
+      `Fleet Ping Service started on port ${config.port}`
+    );
+  });
+
+  // Configure keep-alive and header timeouts for production
+  server.keepAliveTimeout = 65000; // Slightly higher than ALB/ingress idle timeout
+  server.headersTimeout = 66000;
+
+  return server;
+}
+
+// ---------------------------------------------------------------------------
+// Graceful Shutdown
+// ---------------------------------------------------------------------------
+// On SIGTERM/SIGINT: stop accepting new connections, finish in-flight requests,
+// drain the database pool, then exit cleanly.
+// This prevents data loss during deployments and container restarts.
+// ---------------------------------------------------------------------------
+async function gracefulShutdown(signal) {
+  logger.info({ signal }, "Received shutdown signal, starting graceful shutdown...");
+
+  // Stop accepting new connections
+  if (server) {
+    server.close(async () => {
+      logger.info("HTTP server closed — no more incoming connections");
+
+      try {
+        // Drain database connections
+        await dbShutdown();
+        logger.info("Graceful shutdown complete");
+        process.exit(0);
+      } catch (err) {
+        logger.error({ err }, "Error during database shutdown");
+        process.exit(1);
+      }
+    });
+
+    // Force shutdown after 30 seconds if graceful shutdown hangs
+    setTimeout(() => {
+      logger.error("Graceful shutdown timed out — forcing exit");
+      process.exit(1);
+    }, 30000);
+  } else {
+    process.exit(0);
+  }
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+// Handle unhandled rejections and uncaught exceptions
+process.on("unhandledRejection", (reason, promise) => {
+  logger.error({ reason, promise: String(promise) }, "Unhandled promise rejection");
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+process.on("uncaughtException", (err) => {
+  logger.fatal({ err }, "Uncaught exception — shutting down");
+  process.exit(1);
 });
 
+// =============================================================================
+// Start the server (only when run directly, not when imported for testing)
+// =============================================================================
+if (require.main === module) {
+  startServer();
+}
+
+// Export app for testing
 module.exports = app;
