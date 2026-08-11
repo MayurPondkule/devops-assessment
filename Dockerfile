@@ -28,13 +28,20 @@ ENV PORT=3000
 WORKDIR /app
 
 
+# Remove package managers from the runtime image.
+# npm is required only during the dependency/build stage.
+RUN rm -rf /usr/local/lib/node_modules/npm \
+    /usr/local/bin/npm \
+    /usr/local/bin/npx
+
+
 # Create non-root user
 
 RUN addgroup -S appgroup \
     && adduser -S appuser -G appgroup
 
 
-# Copy dependencies
+# Copy production dependencies
 
 COPY --from=dependencies /app/node_modules ./node_modules
 
