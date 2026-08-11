@@ -400,12 +400,16 @@ app.use((err, req, res, _next) => {
 // Server
 // ------------------------------------------------------------
 
-const server = app.listen(config.port, () => {
-  log("info", "server_started", {
-    port: config.port,
-    environment: config.nodeEnv,
+let server = null;
+
+if (require.main === module) {
+  server = app.listen(config.port, () => {
+    log("info", "server_started", {
+      port: config.port,
+      environment: config.nodeEnv,
+    });
   });
-});
+}
 
 // ------------------------------------------------------------
 // Graceful shutdown
@@ -416,7 +420,12 @@ async function shutdown(signal) {
     signal,
   });
 
-  server.close(async () => {
+  if (!server) {
+  await pool.end();
+  return;
+}
+
+server.close(async () => {
     try {
       await pool.end();
 
