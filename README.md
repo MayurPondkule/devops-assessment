@@ -1,112 +1,66 @@
-# Fleet Ping Service
+# VexarDrive Fleet Ping Service
 
-The Fleet Ping Service is a Node.js/Express backend service used to receive vehicle location updates and handle driver authentication.
+Production-readiness assessment for the VexarDrive DevOps & Cloud Infrastructure Engineer role.
 
-The service uses PostgreSQL for persistent storage and is containerized using Docker.
+## Overview
 
-## Technology Stack
+Fleet Ping Service is a Node.js/Express REST API for receiving vehicle location pings and providing authenticated administrative APIs.
 
-* Node.js
-* Express.js
-* PostgreSQL
-* Docker
-* GitHub Actions
+The solution includes:
 
-## API Endpoints
+- Containerized Node.js application
+- PostgreSQL database
+- JWT authentication
+- OTP-based demo authentication
+- Health and readiness endpoints
+- Docker Compose for local development
+- Terraform-based Azure infrastructure
+- Azure Container Apps deployment
+- Azure Container Registry
+- Azure Database for PostgreSQL Flexible Server
+- Azure Key Vault
+- User-assigned Managed Identity
+- Azure Virtual Network and private PostgreSQL connectivity
+- Log Analytics / Azure Monitor
+- GitHub Actions CI/CD
+- Dependency and secret scanning
+- Container vulnerability scanning
 
-The service currently provides endpoints for:
+---
 
-* Driver login
-* Vehicle location ping ingestion
-* Fleet ping retrieval
+## Architecture
 
-Refer to the application source for endpoint definitions, request formats, and current behavior.
+### Production Architecture
 
-## Prerequisites
+```mermaid
+flowchart TB
 
-To run the service locally, ensure you have:
+    Client["Users / API Clients"]
 
-* Node.js
-* npm
-* PostgreSQL
+    Client -->|HTTPS| CA["Azure Container Apps<br/>HTTPS Ingress"]
 
-Alternatively, the application and database can be started using Docker Compose.
+    subgraph Azure["Azure"]
 
-## Local Setup
+        CA --> API["Fleet Ping API<br/>Node.js / Express"]
 
-Install dependencies:
+        ACR["Azure Container Registry"]
+        ACR -->|Pull Image| API
 
-```bash
-npm install
-```
+        MI["User Assigned<br/>Managed Identity"]
+        MI -->|AcrPull| ACR
+        MI -->|Read Secrets| KV["Azure Key Vault"]
 
-Configure the required environment variables using the provided environment configuration.
+        API -->|Managed Identity| KV
 
-Start the application:
+        subgraph VNet["Azure Virtual Network"]
 
-```bash
-node server.js
-```
+            API -->|Private Network| PG["Azure Database for<br/>PostgreSQL Flexible Server"]
 
-The service will start on the configured application port.
+            DNS["Private DNS Zone"]
+            DNS --> PG
 
-## Database
+        end
 
-The service uses PostgreSQL.
+        API --> LA["Log Analytics<br/>Azure Monitor"]
 
-The initial database structure is available in:
-
-```text
-schema.sql
-```
-
-Apply the schema to your local PostgreSQL instance before running the application.
-
-## Docker
-
-The repository includes:
-
-```text
-Dockerfile
-docker-compose.yml
-```
-
-To start the application using Docker Compose:
-
-```bash
-docker compose up --build
-```
-
-## Configuration
-
-Application configuration is managed through environment variables.
-
-Review the existing configuration and application source to determine the variables required to run the service.
-
-## CI/CD
-
-A GitHub Actions workflow is included in the repository.
-
-Changes pushed to the `main` branch currently trigger the configured deployment workflow.
-
-## Repository Structure
-
-```text
-.
-├── .github/
-│   └── workflows/
-├── Dockerfile
-├── docker-compose.yml
-├── schema.sql
-├── server.js
-├── package.json
-└── README.md
-```
-
-## Assessment Context
-
-This repository is provided as part of the **VexarDrive Technologies DevOps & Cloud Infrastructure Engineer Technical Assessment**.
-
-Review the repository in its current state before making changes.
-
-Your assessment brief contains the requirements, expected deliverables, and submission instructions.
+    end

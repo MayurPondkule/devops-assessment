@@ -1,0 +1,47 @@
+flowchart LR
+
+    Vehicles["Fleet Vehicles / Clients"]
+        -->|"HTTPS"| ACA["Azure Container Apps"]
+
+
+    subgraph Azure["Azure"]
+
+        ACA
+
+        ACR["Azure Container Registry"]
+
+        KV["Azure Key Vault"]
+
+        PG["Azure Database for PostgreSQL Flexible Server"]
+
+        MON["Azure Monitor / Log Analytics"]
+
+        MI["User Assigned Managed Identity"]
+
+        VNET["Azure Virtual Network"]
+
+    end
+
+
+    ACA -->|"Managed Identity"| KV
+
+    ACA -->|"Private network + TLS"| PG
+
+    ACA -->|"Logs / Metrics"| MON
+
+    MI -->|"RBAC"| KV
+
+    MI -->|"AcrPull"| ACR
+
+    ACR -->|"Container Image"| ACA
+
+
+    GitHub["GitHub Repository"]
+        --> GHA["GitHub Actions"]
+
+
+    GHA -->|"OIDC"| Azure
+
+    GHA -->|"Push image"| ACR
+
+    GHA -->|"Deploy immutable SHA"| ACA

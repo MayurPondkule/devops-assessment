@@ -1,23 +1,60 @@
-version: "3.8"
-
 services:
+
   app:
-    build: .
+    build:
+      context: .
+
     ports:
       - "3000:3000"
+
     environment:
-      - NODE_ENV=production
+      NODE_ENV: development
+      PORT: 3000
+
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: vexarapp
+      DB_PASSWORD: local-dev-password
+      DB_NAME: vexar_fleet
+
+      DB_SSL: "false"
+
+      DB_POOL_MAX: 10
+
+      JWT_SECRET: local-development-secret-change-me
+      JWT_EXPIRES_IN: 1h
+
+      DEMO_OTP: "123456"
+
+    depends_on:
+      db:
+        condition: service_healthy
+
 
   db:
-    image: postgres:15
-    ports:
-      - "0.0.0.0:5432:5432"
+    image: postgres:17-alpine
+
     environment:
-      - POSTGRES_USER=vexaradmin
-      - POSTGRES_PASSWORD=V3xar@2024!Prod
-      - POSTGRES_DB=vexar_fleet
+      POSTGRES_USER: vexarapp
+      POSTGRES_PASSWORD: local-dev-password
+      POSTGRES_DB: vexar_fleet
+
     volumes:
       - pgdata:/var/lib/postgresql/data
+
+      - ./schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U vexarapp -d vexar_fleet"
+        ]
+
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 
 volumes:
   pgdata:
