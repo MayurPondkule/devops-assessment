@@ -29,10 +29,10 @@ WORKDIR /app
 
 
 # Remove package managers from the runtime image.
-# npm is required only during the dependency/build stage.
+# npm is only required during the dependency/build stage.
 RUN rm -rf /usr/local/lib/node_modules/npm \
-    /usr/local/bin/npm \
-    /usr/local/bin/npx
+    && rm -f /usr/local/bin/npm \
+    && rm -f /usr/local/bin/npx
 
 
 # Create non-root user
@@ -56,7 +56,6 @@ COPY schema.sql ./
 # Run as non-root
 
 USER appuser
-
 
 EXPOSE 3000
 
