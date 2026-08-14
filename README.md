@@ -2,6 +2,7 @@
 
 Production-readiness assessment for the **VexarDrive DevOps & Cloud Infrastructure Engineer** role.
 
+Final Architecture-  https://excalidraw.com/#json=tsOQEln6vVdQUZbwWRCUw,OKfy1ooyXSKlv0CBwVTa-Q
 ## Overview
 
 Fleet Ping Service is a Node.js/Express REST API for receiving vehicle location pings and providing authenticated administrative APIs.
